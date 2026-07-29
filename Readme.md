@@ -52,7 +52,11 @@ content-type: application/json
 
 Screenshot of `/docs` showing the full CRUD cycle tested via "Try it out":
 
-![Swagger UI screenshot](swagger-screenshot.png)
+![Swagger UI screenshot](<img width="934" height="439" alt="1" src="https://github.com/user-attachments/assets/7cec6926-9ecc-4966-ac1c-a5dd2b960c77" />
+<img width="937" height="446" alt="2" src="https://github.com/user-attachments/assets/825d5737-0279-4c75-ae48-b32ee8e3e4a6" />
+<img width="941" height="444" alt="3" src="https://github.com/user-attachments/assets/1983233e-352d-4fb4-abc1-1d7b3f1a1c33" />
+
+)
 
 ## The mortality experiment
 
