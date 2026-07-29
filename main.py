@@ -7,6 +7,7 @@ app = FastAPI(
     description="A small CRUD API for managing a to-do list."
 )
 
+
 tasks = [
     {"id": 1, "title": "Buy milk", "done": False},
     {"id": 2, "title": "Walk the dog", "done": False},
