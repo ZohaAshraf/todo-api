@@ -61,3 +61,18 @@ Screenshot of `/docs` showing the full CRUD cycle tested via "Try it out":
 ## The mortality experiment
 
 Tasks are stored in memory — if the server restarts, all tasks (including any created during testing) are lost and reset back to the original 3 example tasks. This is expected: a real database (coming next week) is what would make the data persist.
+
+# Task API
+
+A small CRUD API for managing a to-do list, built with **FastAPI** and **SQLite**. Supports creating, reading, updating, and deleting tasks, with interactive Swagger docs. Data is stored in a SQLite database file (`tasks.db`) and survives server restarts.
+
+Built for FlyRank Internship — Backend Track. Started as Week 2's Assignment A1 (in-memory storage), upgraded in Week 3's Assignment A2 to a real SQLite database.
+
+## Why SQLite
+
+SQLite was chosen because it needs no separate server or installation — the entire database is a single file (`tasks.db`) that's created automatically the first time the app runs. That makes it ideal for a small project like this: zero setup, and the data now survives restarts, unlike the in-memory list used in Assignment 1.
+
+## How to run it
+
+1. Clone this repo and open a terminal inside the project folder.
+2. Create and activate a virtual environment:
