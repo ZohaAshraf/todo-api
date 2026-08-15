@@ -118,13 +118,13 @@ On first run, `tasks.db` is created automatically along with a `tasks` table, se
 curl -i -X POST http://localhost:8000/tasks \
   -H "Content-Type: application/json" \
   -d "{\"title\":\"Buy milk\"}"
-  
+```
 ```
 HTTP/1.1 201 Created
 content-type: application/json
 
 {"id":4,"title":"Buy milk","done":false}
-
+```
 
 **Update a task**
 ```bash
@@ -132,30 +132,31 @@ curl -i -X PUT http://localhost:8000/tasks/1 \
   -H "Content-Type: application/json" \
   -d "{\"title\":\"Buy milk and eggs\",\"done\":true}"
 ```
-
+```
 HTTP/1.1 200 OK
 content-type: application/json
 
 {"id":1,"title":"Buy milk and eggs","done":1}
-
+```
 
 **Delete a task**
 ```bash
 curl -i -X DELETE http://localhost:8000/tasks/1
 ```
-
+```
 HTTP/1.1 204 No Content
-
+```
 
 **Error response (unknown id)**
 ```bash
 curl -i http://localhost:8000/tasks/999
 ```
-
+```
 HTTP/1.1 404 Not Found
 content-type: application/json
 
 {"detail":"Task 999 not found"}
+```
 
 ## Database design
 
@@ -200,7 +201,7 @@ Result: `3` — matched exactly what `GET /tasks` returned through the API at th
 
 Screenshot of the database open in DB Browser:
 
-<img width="900" alt="DB Browser screenshot" src="![alt text](image.png)" />
+<img width="1570" height="989" alt="DB Browser screenshot" src="https://github.com/user-attachments/assets/44d84b6b-5ddc-4250-877b-668edd69bf5c" />
 
 ## Proof of persistence
 
@@ -238,16 +239,3 @@ Screenshot of `/docs` from Assignment 1, showing the full CRUD cycle tested via 
 - Wrap multi-step writes (like the initial seed) in an explicit transaction for atomicity
 - Add an index on frequently filtered/searched columns
 - Migrate to an async database driver (e.g. `aiosqlite`) for non-blocking I/O under load
-
-## Swagger UI
-
-Screenshot of `/docs` showing the full CRUD cycle tested via "Try it out":
-
-![Swagger UI screenshot](<img width="934" height="439" alt="1" src="https://github.com/user-attachments/assets/7cec6926-9ecc-4966-ac1c-a5dd2b960c77" />
-<img width="937" height="446" alt="2" src="https://github.com/user-attachments/assets/825d5737-0279-4c75-ae48-b32ee8e3e4a6" />
-<img width="941" height="444" alt="3" src="https://github.com/user-attachments/assets/1983233e-352d-4fb4-abc1-1d7b3f1a1c33" />
-
-)
-## The mortality experiment
-
-Tasks are stored in memory — if the server restarts, all tasks (including any created during testing) are lost and reset back to the original 3 example tasks. This is expected: a real database (coming next week) is what would make the data persist.
