@@ -4,7 +4,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from db import init_db, get_db_connection
 from llm.schema import EnrichRequest, EnrichResponse, Category, QualityFlag
-from llm.client import call_model_for_enrichment
+from llm.client import call_model_for_enrichment, call_model_for_repair
+from llm.parse_and_validate import parse_and_validate, write_quarantine_entry
 
 load_dotenv()
 
@@ -41,7 +42,7 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/enrich", summary="Enrich a scraped book record")
+@app.post("/enrich", response_model=EnrichResponse, summary="Enrich a scraped book record")
 def enrich_book(book: EnrichRequest):
     if os.environ.get("LLM_STUB") == "1":
         # Stage 1: fixed, schema-valid fake answer. Proves the route,
@@ -54,15 +55,55 @@ def enrich_book(book: EnrichRequest):
             confidence=0.0,
         )
 
-    # Stage 2: a real model call. Stage 3 will add parsing, schema
-    # validation, and a repair retry on top of this — for now we return
-    # the model's raw text so we can see exactly what it says.
-    raw_text = call_model_for_enrichment(
-        title=book.title,
-        description=book.description,
-        price_gbp=book.price_gbp,
+    # Stage 3: parse -> validate -> repair once -> quarantine on failure.
+    # The model is untrusted input, exactly like data from a scraper.
+    if os.environ.get("LLM_FORCE_BROKEN") == "1":
+        # Deterministic test hook — proves the repair/quarantine path
+        # without depending on a live model actually failing, and without
+        # spending any real API quota. No model call happens here at all.
+        raw_output = '{"book_category": "fiction", "summary": "x", "quality_flags": [], "confidence": 0.5}'
+    else:
+        raw_output = call_model_for_enrichment(
+            title=book.title,
+            description=book.description,
+            price_gbp=book.price_gbp,
+        )
+    validated, error = parse_and_validate(raw_output)
+
+    if validated is not None:
+        return validated
+
+    # First attempt failed — one repair retry, handing the model its own
+    # broken output plus the exact error, and nothing more.
+    if os.environ.get("LLM_FORCE_BROKEN") == "1":
+        # Same deterministic hook — the "repair" also fails on purpose,
+        # so the quarantine path is guaranteed to trigger for this test.
+        repaired_output = '{"book_category": "fiction", "summary": "still wrong", "quality_flags": [], "confidence": 0.5}'
+    else:
+        repaired_output = call_model_for_repair(
+            title=book.title,
+            description=book.description,
+            price_gbp=book.price_gbp,
+            broken_output=raw_output,
+            validation_error=error,
+        )
+    validated, repair_error = parse_and_validate(repaired_output)
+
+    if validated is not None:
+        return validated
+
+    # Still failed after one repair — give up cleanly. Never crash, never
+    # return raw model text, never guess a default and pretend it worked.
+    write_quarantine_entry(
+        input_data=book.model_dump(),
+        prompt_version="enrich-v1",
+        error=repair_error,
+        raw_output=repaired_output,
     )
-    return {"raw_model_output": raw_text}
+    raise HTTPException(
+        status_code=422,
+        detail=f"Model could not produce a valid response after one repair attempt: {repair_error}",
+    )
 
 
 @app.get("/tasks", summary="List all tasks")

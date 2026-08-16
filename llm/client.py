@@ -51,3 +51,41 @@ def call_model_for_enrichment(title: str, description: str | None, price_gbp: fl
     )
 
     return response.choices[0].message.content
+
+
+def call_model_for_repair(title: str, description: str | None, price_gbp: float,
+                           broken_output: str, validation_error: str) -> str:
+    """
+    Stage 3's repair retry: send the model its own broken answer plus the
+    exact validation error, and ask for a corrected version. This fixes
+    the large majority of schema failures in practice — usually the model
+    just needs to be told precisely what it got wrong.
+    """
+    client = get_client()
+    system_prompt = load_system_prompt()
+
+    user_content = json.dumps({
+        "title": title,
+        "description": description,
+        "price_gbp": price_gbp,
+    })
+
+    repair_instruction = (
+        f"Your previous answer was rejected for this reason: {validation_error}\n\n"
+        f"Your previous answer was:\n{broken_output}\n\n"
+        "Return only corrected JSON matching the schema described in your instructions. "
+        "No explanation, no markdown code fences — the JSON object only."
+    )
+
+    response = client.chat.completions.create(
+        model=os.environ["LLM_MODEL"],
+        temperature=0.2,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": broken_output},
+            {"role": "user", "content": repair_instruction},
+        ],
+    )
+
+    return response.choices[0].message.content
