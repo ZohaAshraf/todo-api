@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from db import init_db, get_db_connection
 from llm.schema import EnrichRequest, EnrichResponse, Category, QualityFlag
+from llm.client import call_model_for_enrichment
 
 load_dotenv()
 
@@ -40,11 +41,12 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/enrich", response_model=EnrichResponse, summary="Enrich a scraped book record")
+@app.post("/enrich", summary="Enrich a scraped book record")
 def enrich_book(book: EnrichRequest):
     if os.environ.get("LLM_STUB") == "1":
-        # Fixed, schema-valid fake answer — proves the route, validation,
-        # and response shape all work before a single model call is made.
+        # Stage 1: fixed, schema-valid fake answer. Proves the route,
+        # input validation, and response shape all work correctly
+        # before a single real model call is ever made.
         return EnrichResponse(
             category=Category.other,
             summary="Stub mode: no model was called for this response.",
@@ -52,10 +54,15 @@ def enrich_book(book: EnrichRequest):
             confidence=0.0,
         )
 
-    # Real model call arrives in Stage 2 — until then, calling this
-    # endpoint without LLM_STUB=1 raises on purpose so it's obvious
-    # the real path isn't built yet.
-    raise HTTPException(status_code=501, detail="Real model call not implemented yet (Stage 2)")
+    # Stage 2: a real model call. Stage 3 will add parsing, schema
+    # validation, and a repair retry on top of this — for now we return
+    # the model's raw text so we can see exactly what it says.
+    raw_text = call_model_for_enrichment(
+        title=book.title,
+        description=book.description,
+        price_gbp=book.price_gbp,
+    )
+    return {"raw_model_output": raw_text}
 
 
 @app.get("/tasks", summary="List all tasks")
