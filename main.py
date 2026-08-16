@@ -6,6 +6,7 @@ from db import init_db, get_db_connection
 from llm.schema import EnrichRequest, EnrichResponse, Category, QualityFlag
 from llm.client import call_model_for_enrichment, call_model_for_repair
 from llm.parse_and_validate import parse_and_validate, write_quarantine_entry
+from llm.cost_log import log_call
 
 load_dotenv()
 
@@ -42,6 +43,9 @@ def health():
     return {"status": "ok"}
 
 
+PROMPT_VERSION = "enrich-v1"
+
+
 @app.post("/enrich", response_model=EnrichResponse, summary="Enrich a scraped book record")
 def enrich_book(book: EnrichRequest):
     if os.environ.get("LLM_STUB") == "1":
@@ -55,40 +59,52 @@ def enrich_book(book: EnrichRequest):
             confidence=0.0,
         )
 
-    # Stage 3: parse -> validate -> repair once -> quarantine on failure.
-    # The model is untrusted input, exactly like data from a scraper.
+    if os.environ.get("LLM_ENABLED", "true").lower() == "false":
+        # Stage 4 kill switch: turn the model off without a deploy. Every
+        # production AI feature needs one of these — the day the provider
+        # has an outage, or the bill spikes, someone needs to be able to
+        # flip this off immediately.
+        return EnrichResponse(
+            category=Category.other,
+            summary="LLM enrichment is currently disabled; no model was called.",
+            quality_flags=[],
+            confidence=0.0,
+        )
+
     if os.environ.get("LLM_FORCE_BROKEN") == "1":
         # Deterministic test hook — proves the repair/quarantine path
         # without depending on a live model actually failing, and without
         # spending any real API quota. No model call happens here at all.
         raw_output = '{"book_category": "fiction", "summary": "x", "quality_flags": [], "confidence": 0.5}'
+        usage_info = {"input_tokens": 0, "output_tokens": 0, "duration_ms": 0.0}
     else:
-        raw_output = call_model_for_enrichment(
+        raw_output, usage_info = call_model_for_enrichment(
             title=book.title,
             description=book.description,
             price_gbp=book.price_gbp,
         )
-    validated, error = parse_and_validate(raw_output)
+    log_call(PROMPT_VERSION, os.environ.get("LLM_MODEL", "unknown"), usage_info, was_repair=False)
 
+    validated, error = parse_and_validate(raw_output)
     if validated is not None:
         return validated
 
     # First attempt failed — one repair retry, handing the model its own
     # broken output plus the exact error, and nothing more.
     if os.environ.get("LLM_FORCE_BROKEN") == "1":
-        # Same deterministic hook — the "repair" also fails on purpose,
-        # so the quarantine path is guaranteed to trigger for this test.
         repaired_output = '{"book_category": "fiction", "summary": "still wrong", "quality_flags": [], "confidence": 0.5}'
+        repair_usage_info = {"input_tokens": 0, "output_tokens": 0, "duration_ms": 0.0}
     else:
-        repaired_output = call_model_for_repair(
+        repaired_output, repair_usage_info = call_model_for_repair(
             title=book.title,
             description=book.description,
             price_gbp=book.price_gbp,
             broken_output=raw_output,
             validation_error=error,
         )
-    validated, repair_error = parse_and_validate(repaired_output)
+    log_call(PROMPT_VERSION, os.environ.get("LLM_MODEL", "unknown"), repair_usage_info, was_repair=True)
 
+    validated, repair_error = parse_and_validate(repaired_output)
     if validated is not None:
         return validated
 
@@ -96,7 +112,7 @@ def enrich_book(book: EnrichRequest):
     # return raw model text, never guess a default and pretend it worked.
     write_quarantine_entry(
         input_data=book.model_dump(),
-        prompt_version="enrich-v1",
+        prompt_version=PROMPT_VERSION,
         error=repair_error,
         raw_output=repaired_output,
     )

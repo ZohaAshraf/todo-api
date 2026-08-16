@@ -1,15 +1,29 @@
 """
-The LLM client — one function that turns a book record into raw model text.
-Stage 3 will add parsing, validation, and repair on top of this.
+The LLM client — turns a book record into raw model text, with a real
+timeout and an explicit, deliberate retry policy instead of the SDK's
+silent defaults (10-minute timeout, 2 automatic retries).
 """
 
 import json
 import os
+import random
+import time
 from pathlib import Path
 
-from openai import OpenAI
+from openai import APIConnectionError, APITimeoutError, OpenAI, RateLimitError
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "enrich-v1.md"
+
+# An HTTP endpoint should never wait as long as the SDK defaults to
+# (openai-python waits up to 10 minutes by default). 20 seconds is a
+# generous ceiling for a small classification call.
+REQUEST_TIMEOUT_SECONDS = 20.0
+
+# We disable the SDK's own silent retries (max_retries=0) and do our own
+# instead, so the policy is explicit and visible rather than hidden inside
+# a library default.
+MAX_RETRIES = 2  # one original attempt + up to 2 retries on transient errors
+BASE_BACKOFF_SECONDS = 1.0
 
 
 def load_system_prompt() -> str:
@@ -20,28 +34,54 @@ def get_client() -> OpenAI:
     return OpenAI(
         base_url=os.environ["LLM_BASE_URL"],
         api_key=os.environ["LLM_API_KEY"],
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        max_retries=0,  # we handle retries ourselves, deliberately
     )
 
 
-def call_model_for_enrichment(title: str, description: str | None, price_gbp: float) -> str:
+def _call_with_retry(client: OpenAI, **kwargs):
     """
-    Send one book record to the model and return the raw text it replies
-    with. Temperature is kept low because this is a classification task —
-    we want the same answer for the same input, not creative variation.
+    Retries on timeouts, rate limits (429), and 5xx server errors —
+    problems worth a second try. Never retries on 400/401/403: a bad
+    request or a bad key will still be bad in a few seconds, and retrying
+    those just burns quota for nothing. Uses exponential backoff with a
+    little random jitter so repeated failures don't all retry in lockstep.
+    """
+    last_error = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except (APITimeoutError, RateLimitError, APIConnectionError) as error:
+            last_error = error
+            if attempt < MAX_RETRIES:
+                backoff = BASE_BACKOFF_SECONDS * (2 ** attempt) + random.uniform(0, 0.5)
+                time.sleep(backoff)
+                continue
+            raise
+        # Explicitly NOT catching AuthenticationError (401) or
+        # PermissionDeniedError (403) or BadRequestError (400) — those
+        # propagate immediately, on purpose, without a retry.
+    raise last_error
+
+
+def call_model_for_enrichment(title: str, description: str | None, price_gbp: float) -> tuple[str, dict]:
+    """
+    Send one book record to the model. Returns (raw_text, usage_info) where
+    usage_info carries the numbers needed for cost logging: input tokens,
+    output tokens, and duration in milliseconds.
     """
     client = get_client()
     system_prompt = load_system_prompt()
 
-    # Real JSON, not Python repr — and json.dumps safely escapes anything
-    # in title/description that could otherwise break out of the object
-    # (including an attempted prompt injection embedded in the text).
     user_content = json.dumps({
         "title": title,
         "description": description,
         "price_gbp": price_gbp,
     })
 
-    response = client.chat.completions.create(
+    start = time.monotonic()
+    response = _call_with_retry(
+        client,
         model=os.environ["LLM_MODEL"],
         temperature=0.2,
         messages=[
@@ -49,18 +89,20 @@ def call_model_for_enrichment(title: str, description: str | None, price_gbp: fl
             {"role": "user", "content": user_content},
         ],
     )
+    duration_ms = round((time.monotonic() - start) * 1000, 1)
 
-    return response.choices[0].message.content
+    usage_info = {
+        "input_tokens": getattr(response.usage, "prompt_tokens", None),
+        "output_tokens": getattr(response.usage, "completion_tokens", None),
+        "duration_ms": duration_ms,
+    }
+
+    return response.choices[0].message.content, usage_info
 
 
 def call_model_for_repair(title: str, description: str | None, price_gbp: float,
-                           broken_output: str, validation_error: str) -> str:
-    """
-    Stage 3's repair retry: send the model its own broken answer plus the
-    exact validation error, and ask for a corrected version. This fixes
-    the large majority of schema failures in practice — usually the model
-    just needs to be told precisely what it got wrong.
-    """
+                           broken_output: str, validation_error: str) -> tuple[str, dict]:
+    """Same contract as call_model_for_enrichment, for the repair retry."""
     client = get_client()
     system_prompt = load_system_prompt()
 
@@ -77,7 +119,9 @@ def call_model_for_repair(title: str, description: str | None, price_gbp: float,
         "No explanation, no markdown code fences — the JSON object only."
     )
 
-    response = client.chat.completions.create(
+    start = time.monotonic()
+    response = _call_with_retry(
+        client,
         model=os.environ["LLM_MODEL"],
         temperature=0.2,
         messages=[
@@ -87,5 +131,12 @@ def call_model_for_repair(title: str, description: str | None, price_gbp: float,
             {"role": "user", "content": repair_instruction},
         ],
     )
+    duration_ms = round((time.monotonic() - start) * 1000, 1)
 
-    return response.choices[0].message.content
+    usage_info = {
+        "input_tokens": getattr(response.usage, "prompt_tokens", None),
+        "output_tokens": getattr(response.usage, "completion_tokens", None),
+        "duration_ms": duration_ms,
+    }
+
+    return response.choices[0].message.content, usage_info
